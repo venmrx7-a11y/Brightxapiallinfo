@@ -6,11 +6,12 @@ import requests
 import json
 import re
 import hashlib
+import traceback
 
 app = Flask(__name__)
 app.secret_key = "bright_x_secret_2024"
 
-# Database - with check_same_thread=False for better compatibility
+# Database
 basedir = os.path.abspath(os.path.dirname(__file__))
 db_path = os.path.join(basedir, "bright_x.db")
 app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
@@ -58,19 +59,22 @@ class BannedIP(db.Model):
     user_id = db.Column(db.String(100), nullable=True)
     banned_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# Create tables - FIXED
+# ============ CREATE TABLES ============
 def init_db():
     with app.app_context():
-        db.create_all()
-        
-        # Default settings
-        if not Setting.query.filter_by(key='bg_image').first():
-            db.session.add(Setting(key='bg_image', value=''))
-        if not Setting.query.filter_by(key='bg_type').first():
-            db.session.add(Setting(key='bg_type', value='image'))
-        if not Setting.query.filter_by(key='primary_color').first():
-            db.session.add(Setting(key='primary_color', value='#00ff00'))
-        db.session.commit()
+        try:
+            db.create_all()
+            
+            if not Setting.query.filter_by(key='bg_image').first():
+                db.session.add(Setting(key='bg_image', value=''))
+            if not Setting.query.filter_by(key='bg_type').first():
+                db.session.add(Setting(key='bg_type', value='image'))
+            if not Setting.query.filter_by(key='primary_color').first():
+                db.session.add(Setting(key='primary_color', value='#00ff00'))
+            db.session.commit()
+        except Exception as e:
+            print(f"DB Init Error: {e}")
+            db.session.rollback()
 
 init_db()
 
@@ -113,16 +117,16 @@ def get_num_info(number):
         url = f"{API_NUM2INFO}?num={number}&token={API_TOKEN}"
         r = requests.get(url, timeout=15)
         return r.json()
-    except:
-        return {"status": False, "error": "API Error"}
+    except Exception as e:
+        return {"status": False, "error": str(e)}
 
 def get_tg_info(user_id):
     try:
         url = f"{API_TG2NUM}?q={user_id}&token={API_TOKEN}"
         r = requests.get(url, timeout=15)
         return r.json()
-    except:
-        return {"status": False, "error": "API Error"}
+    except Exception as e:
+        return {"status": False, "error": str(e)}
 
 def extract_all_numbers(data):
     numbers = set()
@@ -178,11 +182,10 @@ def register_user(user_id, username, ip):
             db.session.add(user)
             db.session.commit()
             
-            # Send notification
             try:
                 import requests as req
                 msg = f"🔔 NEW USER\nID: {display_id}\nUser: {user_id}\nIP: {ip}"
-                req.post(f"https://api.telegram.org/bot8592467504:AAEm-p2jCYnWUaq4Yy8MhhMSDI2eTY_Xc6M/sendMessage", json={'chat_id': 8986441675, 'text': msg})
+                req.post("https://api.telegram.org/bot8592467504:AAEm-p2jCYnWUaq4Yy8MhhMSDI2eTY_Xc6M/sendMessage", json={'chat_id': 8986441675, 'text': msg}, timeout=5)
             except:
                 pass
             return user, True
@@ -214,18 +217,6 @@ def is_user_banned(user_id, ip):
         pass
     return False
 
-def fancy(text):
-    fancy_map = {
-        'A': '𝐀', 'B': '𝐁', 'C': '𝐂', 'D': '𝐃', 'E': '𝐄', 'F': '𝐅', 'G': '𝐆', 'H': '𝐇', 'I': '𝐈',
-        'J': '𝐉', 'K': '𝐊', 'L': '𝐋', 'M': '𝐌', 'N': '𝐍', 'O': '𝐎', 'P': '𝐏', 'Q': '𝐐', 'R': '𝐑',
-        'S': '𝐒', 'T': '𝐓', 'U': '𝐔', 'V': '𝐕', 'W': '𝐖', 'X': '𝐗', 'Y': '𝐘', 'Z': '𝐙',
-        'a': '𝐚', 'b': '𝐛', 'c': '𝐜', 'd': '𝐝', 'e': '𝐞', 'f': '𝐟', 'g': '𝐠', 'h': '𝐡', 'i': '𝐢',
-        'j': '𝐣', 'k': '𝐤', 'l': '𝐥', 'm': '𝐦', 'n': '𝐧', 'o': '𝐨', 'p': '𝐩', 'q': '𝐪', 'r': '𝐫',
-        's': '𝐬', 't': '𝐭', 'u': '𝐮', 'v': '𝐯', 'w': '𝐰', 'x': '𝐱', 'y': '𝐲', 'z': '𝐳',
-        '0': '𝟎', '1': '𝟏', '2': '𝟐', '3': '𝟑', '4': '𝟒', '5': '𝟓', '6': '𝟔', '7': '𝟕', '8': '𝟖', '9': '𝟗'
-    }
-    return ''.join(fancy_map.get(c, c) for c in text)
-
 # ============ HTML TEMPLATES ============
 KEY_PAGE_HTML = """
 <!DOCTYPE html>
@@ -238,7 +229,7 @@ KEY_PAGE_HTML = """
 @import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;500;600;700;800;900&display=swap');
 * { margin: 0; padding: 0; box-sizing: border-box; font-family: 'Orbitron', monospace; }
 body { min-height: 100vh; background: #0a0a0a; display: flex; justify-content: center; align-items: center; position: relative; overflow: hidden; }
-body::before { content: ''; position: absolute; width: 100%; height: 100%; {% if bg_type == 'video' %}background: #0a0a0a;{% endif %} z-index: 0; }
+body::before { content: ''; position: absolute; width: 100%; height: 100%; z-index: 0; }
 {% if bg_image %}
 .bg-media { position: absolute; width: 100%; height: 100%; object-fit: cover; opacity: 0.3; z-index: 0; }
 {% endif %}
@@ -282,7 +273,7 @@ body::before { content: ''; position: absolute; width: 100%; height: 100%; {% if
 <button type="submit" class="btn">ACCESS</button>
 </form>
 <a href="/admin-login" class="admin-link">ADMIN PANEL</a>
-<div class="footer">2025 BRIGHT X INFO</div>
+<div class="footer">2025 BRIGHT X INFO | DEV: @iflexvenom</div>
 </div>
 </body>
 </html>
@@ -350,7 +341,7 @@ body { background: #0a0a0a; min-height: 100vh; }
 <div class="container">
 <div class="options">
 <div class="option-card">
-<h2>NUM TO INFO</h2>
+<h2>📞 NUM TO INFO</h2>
 <form method="POST" action="/num-info">
 <input type="text" name="number" placeholder="ENTER MOBILE NUMBER" required>
 <button type="submit">SEARCH</button>
@@ -379,7 +370,7 @@ body { background: #0a0a0a; min-height: 100vh; }
 {% else %}
 <div class="detail-row"><span class="label">No alternative numbers found</span></div>
 {% endfor %}
-<div class="section-title">📍 LOCATION</div>
+<div class="section-title">📍 LOCATION (From Aadhar/Circle)</div>
 <div class="map-container">
 <iframe src="https://maps.google.com/maps?q=28.6139,77.2090&z=12&output=embed"></iframe>
 </div>
@@ -388,7 +379,7 @@ body { background: #0a0a0a; min-height: 100vh; }
 {% endif %}
 </div>
 <div class="option-card">
-<h2>TG TO NUM</h2>
+<h2>🔍 TG TO NUM</h2>
 <form method="POST" action="/tg-info">
 <input type="text" name="user_id" placeholder="ENTER TELEGRAM USER ID" required>
 <button type="submit">SEARCH</button>
@@ -405,10 +396,6 @@ body { background: #0a0a0a; min-height: 100vh; }
 <div class="detail-row"><span class="label">NAME</span> : <span class="value">{{ tg_result.name or 'N/A' }}</span></div>
 <div class="detail-row"><span class="label">MOBILE</span> : <span class="value">{{ tg_result.mobile or 'N/A' }}</span></div>
 <div class="detail-row"><span class="label">STATUS</span> : <span class="value">{{ tg_result.status or 'N/A' }}</span></div>
-<div class="section-title">📍 LOCATION</div>
-<div class="map-container">
-<iframe src="https://maps.google.com/maps?q=28.6139,77.2090&z=12&output=embed"></iframe>
-</div>
 {% endif %}
 </div>
 {% endif %}
@@ -583,235 +570,292 @@ th{color:#00ff00;}
 # ============ FLASK ROUTES ============
 @app.route('/')
 def index():
-    if 'access_granted' in session:
-        return redirect('/dashboard')
-    
-    if is_ip_banned(request.remote_addr):
-        bg = get_setting('bg_image') or ''
-        bg_type = get_setting('bg_type') or 'image'
-        color = get_setting('primary_color') or '#00ff00'
-        return render_template_string(KEY_PAGE_HTML, bg_image=bg, bg_type=bg_type, primary_color=color, banned=True)
-    
-    bg = get_setting('bg_image') or ''
-    bg_type = get_setting('bg_type') or 'image'
-    color = get_setting('primary_color') or '#00ff00'
-    return render_template_string(KEY_PAGE_HTML, bg_image=bg, bg_type=bg_type, primary_color=color)
-
-@app.route('/verify-key', methods=['POST'])
-def verify_key():
-    ip = request.remote_addr
-    
-    if is_ip_banned(ip):
-        bg = get_setting('bg_image') or ''
-        bg_type = get_setting('bg_type') or 'image'
-        color = get_setting('primary_color') or '#00ff00'
-        return render_template_string(KEY_PAGE_HTML, bg_image=bg, bg_type=bg_type, primary_color=color, banned=True)
-    
-    key = request.form.get('key')
-    if key == WEB_ACCESS_KEY:
-        session['access_granted'] = True
+    try:
+        if 'access_granted' in session:
+            return redirect('/dashboard')
         
-        user_id = hashlib.sha256(f"{ip}_{datetime.now().timestamp()}".encode()).hexdigest()[:20]
-        
-        user, is_new = register_user(user_id, None, ip)
-        
-        if user is None:
+        if is_ip_banned(request.remote_addr):
             bg = get_setting('bg_image') or ''
             bg_type = get_setting('bg_type') or 'image'
             color = get_setting('primary_color') or '#00ff00'
             return render_template_string(KEY_PAGE_HTML, bg_image=bg, bg_type=bg_type, primary_color=color, banned=True)
         
-        session['user_id'] = user_id
-        session['display_id'] = user.display_id
-        return redirect('/dashboard')
-    
-    bg = get_setting('bg_image') or ''
-    bg_type = get_setting('bg_type') or 'image'
-    color = get_setting('primary_color') or '#00ff00'
-    return render_template_string(KEY_PAGE_HTML, bg_image=bg, bg_type=bg_type, primary_color=color, error="INVALID ACCESS KEY!")
+        bg = get_setting('bg_image') or ''
+        bg_type = get_setting('bg_type') or 'image'
+        color = get_setting('primary_color') or '#00ff00'
+        return render_template_string(KEY_PAGE_HTML, bg_image=bg, bg_type=bg_type, primary_color=color, banned=False)
+    except Exception as e:
+        print(f"Index Error: {e}")
+        return "Server Error", 500
+
+@app.route('/verify-key', methods=['POST'])
+def verify_key():
+    try:
+        ip = request.remote_addr
+        
+        if is_ip_banned(ip):
+            bg = get_setting('bg_image') or ''
+            bg_type = get_setting('bg_type') or 'image'
+            color = get_setting('primary_color') or '#00ff00'
+            return render_template_string(KEY_PAGE_HTML, bg_image=bg, bg_type=bg_type, primary_color=color, banned=True)
+        
+        key = request.form.get('key')
+        if key == WEB_ACCESS_KEY:
+            session['access_granted'] = True
+            
+            user_id = hashlib.sha256(f"{ip}_{datetime.now().timestamp()}".encode()).hexdigest()[:20]
+            
+            user, is_new = register_user(user_id, None, ip)
+            
+            if user is None:
+                bg = get_setting('bg_image') or ''
+                bg_type = get_setting('bg_type') or 'image'
+                color = get_setting('primary_color') or '#00ff00'
+                return render_template_string(KEY_PAGE_HTML, bg_image=bg, bg_type=bg_type, primary_color=color, banned=True)
+            
+            session['user_id'] = user_id
+            session['display_id'] = user.display_id
+            return redirect('/dashboard')
+        
+        bg = get_setting('bg_image') or ''
+        bg_type = get_setting('bg_type') or 'image'
+        color = get_setting('primary_color') or '#00ff00'
+        return render_template_string(KEY_PAGE_HTML, bg_image=bg, bg_type=bg_type, primary_color=color, error="INVALID ACCESS KEY!")
+    except Exception as e:
+        print(f"Verify Error: {e}")
+        traceback.print_exc()
+        return "Server Error", 500
 
 @app.route('/dashboard')
 def dashboard():
-    if 'access_granted' not in session:
-        return redirect('/')
-    
-    user_id = session.get('user_id')
-    user = User.query.filter_by(user_id=user_id).first()
-    
-    if user and user.is_banned:
-        session.clear()
-        return redirect('/')
-    
-    if is_ip_banned(request.remote_addr):
-        session.clear()
-        return redirect('/')
-    
-    color = get_setting('primary_color') or '#00ff00'
-    history = SearchHistory.query.filter_by(user_id=user.id).order_by(SearchHistory.created_at.desc()).limit(20).all() if user else []
-    
-    return render_template_string(DASHBOARD_HTML,
-        user_display_id=user.display_id if user else 'N/A',
-        user_id=user_id,
-        user_username=user.username if user else 'N/A',
-        user_ip=user.ip_address if user else 'N/A',
-        user_first_seen=user.first_seen.strftime('%Y-%m-%d %H:%M') if user else 'N/A',
-        user_banned=user.is_banned if user else False,
-        primary_color=color,
-        history=history
-    )
+    try:
+        if 'access_granted' not in session:
+            return redirect('/')
+        
+        user_id = session.get('user_id')
+        user = User.query.filter_by(user_id=user_id).first()
+        
+        if user and user.is_banned:
+            session.clear()
+            return redirect('/')
+        
+        if is_ip_banned(request.remote_addr):
+            session.clear()
+            return redirect('/')
+        
+        color = get_setting('primary_color') or '#00ff00'
+        history = SearchHistory.query.filter_by(user_id=user.id).order_by(SearchHistory.created_at.desc()).limit(20).all() if user else []
+        
+        return render_template_string(DASHBOARD_HTML,
+            user_display_id=user.display_id if user else 'N/A',
+            user_id=user_id,
+            user_username=user.username if user else 'N/A',
+            user_ip=user.ip_address if user else 'N/A',
+            user_first_seen=user.first_seen.strftime('%Y-%m-%d %H:%M') if user else 'N/A',
+            user_banned=user.is_banned if user else False,
+            primary_color=color,
+            history=history
+        )
+    except Exception as e:
+        print(f"Dashboard Error: {e}")
+        return "Server Error", 500
 
 @app.route('/num-info', methods=['POST'])
 def num_info():
-    if 'access_granted' not in session:
-        return redirect('/')
-    
-    user_id = session.get('user_id')
-    user = User.query.filter_by(user_id=user_id).first()
-    
-    if user and user.is_banned:
-        session.clear()
-        return redirect('/')
-    
-    number = request.form.get('number')
-    color = get_setting('primary_color') or '#00ff00'
-    
-    all_nums, result = get_all_alternatives(number)
-    all_nums = sorted(list(all_nums))
-    
-    num_result = {
-        'data': result.get('data', []),
-        'all_numbers': all_nums,
-        'error': result.get('error') if not result.get('status') else None,
-        'protected': 'protected' in str(result).lower() if result else False
-    }
-    
-    if user:
-        history = SearchHistory(user_id=user.id, search_type='num', query=number, result=json.dumps(result))
-        db.session.add(history)
-        db.session.commit()
-    
-    return render_template_string(DASHBOARD_HTML,
-        num_result=num_result,
-        user_display_id=user.display_id if user else 'N/A',
-        user_id=user_id,
-        user_username=user.username if user else 'N/A',
-        user_ip=user.ip_address if user else 'N/A',
-        user_first_seen=user.first_seen.strftime('%Y-%m-%d %H:%M') if user else 'N/A',
-        user_banned=user.is_banned if user else False,
-        primary_color=color,
-        history=[]
-    )
+    try:
+        if 'access_granted' not in session:
+            return redirect('/')
+        
+        user_id = session.get('user_id')
+        user = User.query.filter_by(user_id=user_id).first()
+        
+        if user and user.is_banned:
+            session.clear()
+            return redirect('/')
+        
+        number = request.form.get('number')
+        color = get_setting('primary_color') or '#00ff00'
+        
+        all_nums, result = get_all_alternatives(number)
+        all_nums = sorted(list(all_nums))
+        
+        # Try to get location from address
+        location = "28.6139,77.2090"  # Default Delhi
+        if result.get('status') and result.get('data'):
+            address = result['data'][0].get('Address', '')
+            if address:
+                try:
+                    geo_url = f"https://nominatim.openstreetmap.org/search?q={address}&format=json&limit=1"
+                    geo_resp = requests.get(geo_url, headers={'User-Agent': 'BrightX/1.0'}, timeout=5)
+                    if geo_resp.status_code == 200:
+                        geo_data = geo_resp.json()
+                        if geo_data:
+                            location = f"{geo_data[0].get('lat')},{geo_data[0].get('lon')}"
+                except:
+                    pass
+        
+        num_result = {
+            'data': result.get('data', []),
+            'all_numbers': all_nums,
+            'error': result.get('error') if not result.get('status') else None,
+            'protected': 'protected' in str(result).lower() if result else False,
+            'location': location
+        }
+        
+        if user:
+            history = SearchHistory(user_id=user.id, search_type='num', query=number, result=json.dumps(result))
+            db.session.add(history)
+            db.session.commit()
+        
+        return render_template_string(DASHBOARD_HTML,
+            num_result=num_result,
+            user_display_id=user.display_id if user else 'N/A',
+            user_id=user_id,
+            user_username=user.username if user else 'N/A',
+            user_ip=user.ip_address if user else 'N/A',
+            user_first_seen=user.first_seen.strftime('%Y-%m-%d %H:%M') if user else 'N/A',
+            user_banned=user.is_banned if user else False,
+            primary_color=color,
+            history=[]
+        )
+    except Exception as e:
+        print(f"Num Info Error: {e}")
+        return "Server Error", 500
 
 @app.route('/tg-info', methods=['POST'])
 def tg_info():
-    if 'access_granted' not in session:
-        return redirect('/')
-    
-    user_id = session.get('user_id')
-    user = User.query.filter_by(user_id=user_id).first()
-    
-    if user and user.is_banned:
-        session.clear()
-        return redirect('/')
-    
-    tg_id = request.form.get('user_id')
-    color = get_setting('primary_color') or '#00ff00'
-    
-    result = get_tg_info(tg_id)
-    
-    tg_result = {
-        'username': result.get('username') if result.get('status') else 'N/A',
-        'name': result.get('name') if result.get('status') else 'N/A',
-        'mobile': result.get('mobile') if result.get('status') else 'N/A',
-        'status': result.get('status') if result.get('status') else 'N/A',
-        'error': result.get('error') if not result.get('status') else None,
-        'protected': 'protected' in str(result).lower() if result else False
-    }
-    
-    if user:
-        history = SearchHistory(user_id=user.id, search_type='tg', query=tg_id, result=json.dumps(result))
-        db.session.add(history)
-        db.session.commit()
-    
-    return render_template_string(DASHBOARD_HTML,
-        tg_result=tg_result,
-        user_display_id=user.display_id if user else 'N/A',
-        user_id=user_id,
-        user_username=user.username if user else 'N/A',
-        user_ip=user.ip_address if user else 'N/A',
-        user_first_seen=user.first_seen.strftime('%Y-%m-%d %H:%M') if user else 'N/A',
-        user_banned=user.is_banned if user else False,
-        primary_color=color,
-        history=[]
-    )
+    try:
+        if 'access_granted' not in session:
+            return redirect('/')
+        
+        user_id = session.get('user_id')
+        user = User.query.filter_by(user_id=user_id).first()
+        
+        if user and user.is_banned:
+            session.clear()
+            return redirect('/')
+        
+        tg_id = request.form.get('user_id')
+        color = get_setting('primary_color') or '#00ff00'
+        
+        result = get_tg_info(tg_id)
+        
+        tg_result = {
+            'username': result.get('username') if result.get('status') else 'N/A',
+            'name': result.get('name') if result.get('status') else 'N/A',
+            'mobile': result.get('mobile') if result.get('status') else 'N/A',
+            'status': 'Found' if result.get('status') else 'Not Found',
+            'error': result.get('error') if not result.get('status') else None,
+            'protected': 'protected' in str(result).lower() if result else False
+        }
+        
+        if user:
+            history = SearchHistory(user_id=user.id, search_type='tg', query=tg_id, result=json.dumps(result))
+            db.session.add(history)
+            db.session.commit()
+        
+        return render_template_string(DASHBOARD_HTML,
+            tg_result=tg_result,
+            user_display_id=user.display_id if user else 'N/A',
+            user_id=user_id,
+            user_username=user.username if user else 'N/A',
+            user_ip=user.ip_address if user else 'N/A',
+            user_first_seen=user.first_seen.strftime('%Y-%m-%d %H:%M') if user else 'N/A',
+            user_banned=user.is_banned if user else False,
+            primary_color=color,
+            history=[]
+        )
+    except Exception as e:
+        print(f"TG Info Error: {e}")
+        return "Server Error", 500
 
 # ============ ADMIN ROUTES ============
 @app.route('/admin-login', methods=['GET', 'POST'])
 def admin_login():
-    if request.method == 'POST':
-        username = request.form.get('username')
-        password = request.form.get('password')
-        if username == ADMIN_ACCESS_KEY and password == ADMIN_ACCESS_KEY:
-            session['admin_logged_in'] = True
-            return redirect('/admin')
-        return render_template_string(ADMIN_LOGIN_HTML, error="Invalid credentials!")
-    return render_template_string(ADMIN_LOGIN_HTML)
+    try:
+        if request.method == 'POST':
+            username = request.form.get('username')
+            password = request.form.get('password')
+            if username == ADMIN_ACCESS_KEY and password == ADMIN_ACCESS_KEY:
+                session['admin_logged_in'] = True
+                return redirect('/admin')
+            return render_template_string(ADMIN_LOGIN_HTML, error="Invalid credentials!")
+        return render_template_string(ADMIN_LOGIN_HTML)
+    except Exception as e:
+        print(f"Admin Login Error: {e}")
+        return "Server Error", 500
 
 @app.route('/admin')
 def admin_panel():
-    if not session.get('admin_logged_in'):
-        return redirect('/admin-login')
-    
-    users = User.query.order_by(User.display_id).all()
-    banned_count = User.query.filter_by(is_banned=True).count()
-    banned_ips = BannedIP.query.all()
-    settings = {
-        'bg_image': get_setting('bg_image') or '',
-        'bg_type': get_setting('bg_type') or 'image',
-        'primary_color': get_setting('primary_color') or '#00ff00'
-    }
-    return render_template_string(ADMIN_PANEL_HTML, users=users, banned_count=banned_count, banned_ips=banned_ips, settings=settings)
+    try:
+        if not session.get('admin_logged_in'):
+            return redirect('/admin-login')
+        
+        users = User.query.order_by(User.display_id).all()
+        banned_count = User.query.filter_by(is_banned=True).count()
+        banned_ips = BannedIP.query.all()
+        settings = {
+            'bg_image': get_setting('bg_image') or '',
+            'bg_type': get_setting('bg_type') or 'image',
+            'primary_color': get_setting('primary_color') or '#00ff00'
+        }
+        return render_template_string(ADMIN_PANEL_HTML, users=users, banned_count=banned_count, banned_ips=banned_ips, settings=settings)
+    except Exception as e:
+        print(f"Admin Panel Error: {e}")
+        return "Server Error", 500
 
 @app.route('/admin/update-settings', methods=['POST'])
 def update_settings():
-    if not session.get('admin_logged_in'):
-        return redirect('/admin-login')
-    
-    set_setting('bg_image', request.form.get('bg_image', ''))
-    set_setting('bg_type', request.form.get('bg_type', 'image'))
-    set_setting('primary_color', request.form.get('primary_color', '#00ff00'))
-    return redirect('/admin')
+    try:
+        if not session.get('admin_logged_in'):
+            return redirect('/admin-login')
+        
+        set_setting('bg_image', request.form.get('bg_image', ''))
+        set_setting('bg_type', request.form.get('bg_type', 'image'))
+        set_setting('primary_color', request.form.get('primary_color', '#00ff00'))
+        return redirect('/admin')
+    except Exception as e:
+        print(f"Update Settings Error: {e}")
+        return "Server Error", 500
 
 @app.route('/admin/ban', methods=['POST'])
 def admin_ban():
-    if not session.get('admin_logged_in'):
-        return redirect('/admin-login')
-    
-    user_id = request.form.get('user_id')
-    user = User.query.filter_by(user_id=user_id).first()
-    if user:
-        user.is_banned = True
-        if user.ip_address and not is_ip_banned(user.ip_address):
-            banned = BannedIP(ip_address=user.ip_address, user_id=user_id)
-            db.session.add(banned)
-        db.session.commit()
-    return redirect('/admin')
+    try:
+        if not session.get('admin_logged_in'):
+            return redirect('/admin-login')
+        
+        user_id = request.form.get('user_id')
+        user = User.query.filter_by(user_id=user_id).first()
+        if user:
+            user.is_banned = True
+            if user.ip_address and not is_ip_banned(user.ip_address):
+                banned = BannedIP(ip_address=user.ip_address, user_id=user_id)
+                db.session.add(banned)
+            db.session.commit()
+        return redirect('/admin')
+    except Exception as e:
+        print(f"Admin Ban Error: {e}")
+        return "Server Error", 500
 
 @app.route('/admin/unban', methods=['POST'])
 def admin_unban():
-    if not session.get('admin_logged_in'):
-        return redirect('/admin-login')
-    
-    user_id = request.form.get('user_id')
-    user = User.query.filter_by(user_id=user_id).first()
-    if user:
-        user.is_banned = False
-        if user.ip_address:
-            banned = BannedIP.query.filter_by(ip_address=user.ip_address).first()
-            if banned:
-                db.session.delete(banned)
-        db.session.commit()
-    return redirect('/admin')
+    try:
+        if not session.get('admin_logged_in'):
+            return redirect('/admin-login')
+        
+        user_id = request.form.get('user_id')
+        user = User.query.filter_by(user_id=user_id).first()
+        if user:
+            user.is_banned = False
+            if user.ip_address:
+                banned = BannedIP.query.filter_by(ip_address=user.ip_address).first()
+                if banned:
+                    db.session.delete(banned)
+            db.session.commit()
+        return redirect('/admin')
+    except Exception as e:
+        print(f"Admin Unban Error: {e}")
+        return "Server Error", 500
 
 @app.route('/health')
 def health():
