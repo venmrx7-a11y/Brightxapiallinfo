@@ -38,7 +38,7 @@ class User(db.Model):
     ip_address = db.Column(db.String(50), nullable=True)
     first_seen = db.Column(db.DateTime, default=datetime.utcnow)
     is_banned = db.Column(db.Boolean, default=False)
-    search_count = db.Column(db.Integer, default=0)
+    device_id = db.Column(db.String(200), nullable=True)
 
 class Setting(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -53,6 +53,12 @@ class SearchHistory(db.Model):
     result = db.Column(db.Text, nullable=True)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
 
+class BannedIP(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    ip_address = db.Column(db.String(50), unique=True, nullable=False)
+    user_id = db.Column(db.String(100), nullable=True)
+    banned_at = db.Column(db.DateTime, default=datetime.utcnow)
+
 # Create tables
 with app.app_context():
     db.create_all()
@@ -61,7 +67,7 @@ with app.app_context():
     if not Setting.query.filter_by(key='bg_image').first():
         db.session.add(Setting(key='bg_image', value=''))
     if not Setting.query.filter_by(key='bg_type').first():
-        db.session.add(Setting(key='bg_type', value='image'))  # image or video
+        db.session.add(Setting(key='bg_type', value='image'))
     if not Setting.query.filter_by(key='primary_color').first():
         db.session.add(Setting(key='primary_color', value='#00ff00'))
     db.session.commit()
@@ -83,6 +89,16 @@ def set_setting(key, value):
 def get_next_display_id():
     last = User.query.order_by(User.display_id.desc()).first()
     return last.display_id + 1 if last else 18277
+
+def get_device_id(ip, user_agent):
+    """Generate unique device ID from IP + User Agent"""
+    combined = f"{ip}_{user_agent}"
+    return hashlib.sha256(combined.encode()).hexdigest()[:32]
+
+def is_ip_banned(ip):
+    """Check if IP is banned"""
+    banned = BannedIP.query.filter_by(ip_address=ip).first()
+    return banned is not None
 
 def get_num_info(number):
     try:
@@ -131,20 +147,39 @@ def get_all_alternatives(number, depth=3):
     
     return all_nums, result
 
-def register_user(user_id, username, ip):
+def register_user(user_id, username, ip, user_agent):
+    """Register new user with device tracking"""
+    # Check if IP is banned
+    if is_ip_banned(ip):
+        return None, False
+    
+    device_id = get_device_id(ip, user_agent)
+    
+    # Check if user exists by user_id or device_id
     user = User.query.filter_by(user_id=str(user_id)).first()
+    
+    # If user banned by IP
+    if user and user.is_banned:
+        # Add IP to banned list
+        if not is_ip_banned(ip):
+            banned = BannedIP(ip_address=ip, user_id=str(user_id))
+            db.session.add(banned)
+            db.session.commit()
+        return None, False
+    
     if not user:
         display_id = get_next_display_id()
         user = User(
             display_id=display_id,
             user_id=str(user_id),
             username=username,
-            ip_address=ip
+            ip_address=ip,
+            device_id=device_id
         )
         db.session.add(user)
         db.session.commit()
         
-        # Send to Telegram bot
+        # Send notification to Telegram
         try:
             import requests as req
             msg = f"🔔 NEW USER\nID: {display_id}\nUser: {user_id}\nIP: {ip}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
@@ -152,11 +187,35 @@ def register_user(user_id, username, ip):
         except:
             pass
         return user, True
+    
+    # Check if user is banned
+    if user.is_banned:
+        # Add IP to banned list
+        if not is_ip_banned(ip):
+            banned = BannedIP(ip_address=ip, user_id=str(user_id))
+            db.session.add(banned)
+            db.session.commit()
+        return None, False
+    
     return user, False
 
-def is_banned(user_id):
+def is_user_banned(user_id, ip):
+    """Check if user is banned by ID or IP"""
+    # Check IP ban
+    if is_ip_banned(ip):
+        return True
+    
+    # Check user ban
     user = User.query.filter_by(user_id=str(user_id)).first()
-    return user and user.is_banned
+    if user and user.is_banned:
+        # Also ban IP
+        if not is_ip_banned(ip):
+            banned = BannedIP(ip_address=ip, user_id=str(user_id))
+            db.session.add(banned)
+            db.session.commit()
+        return True
+    
+    return False
 
 def fancy(text):
     fancy_map = {
@@ -170,7 +229,7 @@ def fancy(text):
     }
     return ''.join(fancy_map.get(c, c) for c in text)
 
-# ============ HTML ============
+# ============ HTML TEMPLATES ============
 KEY_PAGE_HTML = """
 <!DOCTYPE html>
 <html>
@@ -201,6 +260,7 @@ body::before { content: ''; position: absolute; width: 100%; height: 100%; {% if
 .btn { width: 100%; padding: 15px; background: linear-gradient(135deg, {{ primary_color }}, {{ primary_color }}88); border: none; border-radius: 15px; color: #0a0a0a; font-size: 16px; font-weight: 800; letter-spacing: 2px; cursor: pointer; }
 .btn:hover { transform: translateY(-3px); box-shadow: 0 8px 30px {{ primary_color }}55; }
 .error { background: rgba(255,0,0,0.2); border: 1px solid #ff0000; border-radius: 12px; padding: 12px; margin-bottom: 20px; text-align: center; color: #ff6666; font-size: 12px; }
+.banned-msg { background: rgba(255,0,0,0.3); border: 1px solid #ff0000; border-radius: 12px; padding: 20px; margin-bottom: 20px; text-align: center; color: #ff3333; font-size: 14px; }
 .footer { text-align: center; margin-top: 30px; font-size: 9px; color: {{ primary_color }}44; }
 .admin-link { color: {{ primary_color }}44; text-decoration: none; font-size: 10px; display: block; margin-top: 15px; }
 .admin-link:hover { color: {{ primary_color }}; }
@@ -218,6 +278,7 @@ body::before { content: ''; position: absolute; width: 100%; height: 100%; {% if
 <div class="card">
 <div class="logo"><h1>BRIGHT X INFO</h1><p>ACCESS GRANTED</p></div>
 <p class="sub">ENTER KEY TO ACCESS</p>
+{% if banned %}<div class="banned-msg">🚫 YOU ARE BANNED FROM THIS SERVICE</div>{% endif %}
 {% if error %}<div class="error">{{ error }}</div>{% endif %}
 <form method="POST" action="/verify-key">
 <div class="input-group"><input type="text" name="key" placeholder="ENTER ACCESS KEY" required autofocus></div>
@@ -446,7 +507,6 @@ body{background:#0a0a0a;min-height:100vh;}
 .stat-card .value{color:#00ff00;font-size:28px;font-weight:bold;}
 .section{background:rgba(0,0,0,0.8);border-radius:20px;padding:25px;margin-bottom:30px;border:1px solid rgba(0,255,0,0.3);}
 .section h2{color:#00ff00;margin-bottom:20px;font-size:18px;}
-.section h3{color:#00ff00;margin-top:15px;font-size:14px;}
 .section input{width:100%;padding:12px;margin:5px 0;background:rgba(0,255,0,0.05);border:1px solid rgba(0,255,0,0.3);border-radius:10px;color:#00ff00;}
 .section button{background:linear-gradient(135deg,#00ff00,#009900);border:none;padding:10px 20px;border-radius:10px;color:#0a0a0a;font-weight:bold;cursor:pointer;}
 table{width:100%;border-collapse:collapse;}
@@ -462,7 +522,7 @@ th{color:#00ff00;}
 <div class="stats">
 <div class="stat-card"><h3>TOTAL USERS</h3><div class="value">{{ users|length }}</div></div>
 <div class="stat-card"><h3>BANNED</h3><div class="value">{{ banned_count }}</div></div>
-<div class="stat-card"><h3>SEARCHES</h3><div class="value">{{ total_searches }}</div></div>
+<div class="stat-card"><h3>BANNED IPs</h3><div class="value">{{ banned_ips|length }}</div></div>
 </div>
 
 <div class="section"><h2>⚙️ SETTINGS</h2>
@@ -479,7 +539,7 @@ th{color:#00ff00;}
 
 <div class="section"><h2>👥 USERS</h2>
 <div class="table-container">
-<table><thead><tr><th>#</th><th>DISPLAY ID</th><th>USERNAME</th><th>USER ID</th><th>IP</th><th>SEARCHES</th><th>STATUS</th><th>ACTION</th></tr></thead>
+<table><thead><tr><th>#</th><th>DISPLAY ID</th><th>USERNAME</th><th>USER ID</th><th>IP</th><th>STATUS</th><th>ACTION</th></tr></thead>
 <tbody>
 {% for u in users %}
 <tr>
@@ -488,7 +548,6 @@ th{color:#00ff00;}
 <td>{{ u.username or '-' }}</td>
 <td>{{ u.user_id }}</td>
 <td>{{ u.ip_address or '-' }}</td>
-<td>{{ u.search_count }}</td>
 <td style="color:{% if u.is_banned %}#ff3366{% else %}#00ff00{% endif %};">{{ 'BANNED' if u.is_banned else 'ACTIVE' }}</td>
 <td>
 {% if u.is_banned %}
@@ -506,6 +565,19 @@ th{color:#00ff00;}
 </tr>
 {% endfor %}
 </tbody></table></div></div>
+
+<div class="section"><h2>🚫 BANNED IPs</h2>
+<div class="table-container">
+<table><thead><tr><th>IP ADDRESS</th><th>USER ID</th><th>BANNED AT</th></tr></thead>
+<tbody>
+{% for ip in banned_ips %}
+<tr>
+<td>{{ ip.ip_address }}</td>
+<td>{{ ip.user_id or 'N/A' }}</td>
+<td>{{ ip.banned_at.strftime('%Y-%m-%d %H:%M') }}</td>
+</tr>
+{% endfor %}
+</tbody></table></div></div>
 </div>
 </body>
 </html>
@@ -516,6 +588,14 @@ th{color:#00ff00;}
 def index():
     if 'access_granted' in session:
         return redirect('/dashboard')
+    
+    # Check if IP is banned
+    if is_ip_banned(request.remote_addr):
+        bg = get_setting('bg_image') or ''
+        bg_type = get_setting('bg_type') or 'image'
+        color = get_setting('primary_color') or '#00ff00'
+        return render_template_string(KEY_PAGE_HTML, bg_image=bg, bg_type=bg_type, primary_color=color, banned=True)
+    
     bg = get_setting('bg_image') or ''
     bg_type = get_setting('bg_type') or 'image'
     color = get_setting('primary_color') or '#00ff00'
@@ -523,15 +603,36 @@ def index():
 
 @app.route('/verify-key', methods=['POST'])
 def verify_key():
+    ip = request.remote_addr
+    
+    # Check IP ban first
+    if is_ip_banned(ip):
+        bg = get_setting('bg_image') or ''
+        bg_type = get_setting('bg_type') or 'image'
+        color = get_setting('primary_color') or '#00ff00'
+        return render_template_string(KEY_PAGE_HTML, bg_image=bg, bg_type=bg_type, primary_color=color, banned=True)
+    
     key = request.form.get('key')
     if key == WEB_ACCESS_KEY:
         session['access_granted'] = True
-        # Register user with IP
-        user_id = request.remote_addr + str(datetime.now().timestamp())
-        user, is_new = register_user(user_id, None, request.remote_addr)
+        
+        # Generate user ID from IP + timestamp
+        user_id = hashlib.sha256(f"{ip}_{datetime.now().timestamp()}".encode()).hexdigest()[:20]
+        
+        # Register user
+        user, is_new = register_user(user_id, None, ip, request.headers.get('User-Agent', ''))
+        
+        if user is None:
+            # User is banned
+            bg = get_setting('bg_image') or ''
+            bg_type = get_setting('bg_type') or 'image'
+            color = get_setting('primary_color') or '#00ff00'
+            return render_template_string(KEY_PAGE_HTML, bg_image=bg, bg_type=bg_type, primary_color=color, banned=True)
+        
         session['user_id'] = user_id
         session['display_id'] = user.display_id
         return redirect('/dashboard')
+    
     bg = get_setting('bg_image') or ''
     bg_type = get_setting('bg_type') or 'image'
     color = get_setting('primary_color') or '#00ff00'
@@ -544,6 +645,17 @@ def dashboard():
     
     user_id = session.get('user_id')
     user = User.query.filter_by(user_id=user_id).first()
+    
+    # Check if user is banned
+    if user and user.is_banned:
+        session.clear()
+        return redirect('/')
+    
+    # Check IP ban
+    if is_ip_banned(request.remote_addr):
+        session.clear()
+        return redirect('/')
+    
     color = get_setting('primary_color') or '#00ff00'
     history = SearchHistory.query.filter_by(user_id=user.id).order_by(SearchHistory.created_at.desc()).limit(20).all() if user else []
     
@@ -563,6 +675,13 @@ def num_info():
     if 'access_granted' not in session:
         return redirect('/')
     
+    user_id = session.get('user_id')
+    user = User.query.filter_by(user_id=user_id).first()
+    
+    if user and user.is_banned:
+        session.clear()
+        return redirect('/')
+    
     number = request.form.get('number')
     color = get_setting('primary_color') or '#00ff00'
     
@@ -577,10 +696,7 @@ def num_info():
     }
     
     # Save history
-    user_id = session.get('user_id')
-    user = User.query.filter_by(user_id=user_id).first()
     if user:
-        user.search_count += 1
         history = SearchHistory(user_id=user.id, search_type='num', query=number, result=json.dumps(result))
         db.session.add(history)
         db.session.commit()
@@ -602,6 +718,13 @@ def tg_info():
     if 'access_granted' not in session:
         return redirect('/')
     
+    user_id = session.get('user_id')
+    user = User.query.filter_by(user_id=user_id).first()
+    
+    if user and user.is_banned:
+        session.clear()
+        return redirect('/')
+    
     tg_id = request.form.get('user_id')
     color = get_setting('primary_color') or '#00ff00'
     
@@ -616,11 +739,7 @@ def tg_info():
         'protected': 'protected' in str(result).lower() if result else False
     }
     
-    # Save history
-    user_id = session.get('user_id')
-    user = User.query.filter_by(user_id=user_id).first()
     if user:
-        user.search_count += 1
         history = SearchHistory(user_id=user.id, search_type='tg', query=tg_id, result=json.dumps(result))
         db.session.add(history)
         db.session.commit()
@@ -656,13 +775,13 @@ def admin_panel():
     
     users = User.query.order_by(User.display_id).all()
     banned_count = User.query.filter_by(is_banned=True).count()
-    total_searches = SearchHistory.query.count()
+    banned_ips = BannedIP.query.all()
     settings = {
         'bg_image': get_setting('bg_image') or '',
         'bg_type': get_setting('bg_type') or 'image',
         'primary_color': get_setting('primary_color') or '#00ff00'
     }
-    return render_template_string(ADMIN_PANEL_HTML, users=users, banned_count=banned_count, total_searches=total_searches, settings=settings)
+    return render_template_string(ADMIN_PANEL_HTML, users=users, banned_count=banned_count, banned_ips=banned_ips, settings=settings)
 
 @app.route('/admin/update-settings', methods=['POST'])
 def update_settings():
@@ -683,6 +802,10 @@ def admin_ban():
     user = User.query.filter_by(user_id=user_id).first()
     if user:
         user.is_banned = True
+        # Also ban IP
+        if user.ip_address and not is_ip_banned(user.ip_address):
+            banned = BannedIP(ip_address=user.ip_address, user_id=user_id)
+            db.session.add(banned)
         db.session.commit()
     return redirect('/admin')
 
@@ -695,6 +818,11 @@ def admin_unban():
     user = User.query.filter_by(user_id=user_id).first()
     if user:
         user.is_banned = False
+        # Remove IP from banned list (optional)
+        if user.ip_address:
+            banned = BannedIP.query.filter_by(ip_address=user.ip_address).first()
+            if banned:
+                db.session.delete(banned)
         db.session.commit()
     return redirect('/admin')
 
