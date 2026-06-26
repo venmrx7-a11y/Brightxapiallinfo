@@ -10,10 +10,14 @@ import hashlib
 app = Flask(__name__)
 app.secret_key = "bright_x_secret_2024"
 
-# Database
+# Database - with check_same_thread=False for better compatibility
 basedir = os.path.abspath(os.path.dirname(__file__))
-app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{os.path.join(basedir, "bright_x.db")}'
+db_path = os.path.join(basedir, "bright_x.db")
+app.config['SQLALCHEMY_DATABASE_URI'] = f'sqlite:///{db_path}'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+app.config['SQLALCHEMY_ENGINE_OPTIONS'] = {
+    'connect_args': {'check_same_thread': False}
+}
 db = SQLAlchemy(app)
 
 # ============ API CONFIG ============
@@ -25,10 +29,6 @@ API_TG2NUM = "https://spyshadow.site/api/tg-to-num.php"
 WEB_ACCESS_KEY = "BRIGHT-X-OWNER"
 ADMIN_ACCESS_KEY = "VENOM-X-OWNER"
 
-# ============ TELEGRAM BOT ============
-BOT_TOKEN = "8592467504:AAEm-p2jCYnWUaq4Yy8MhhMSDI2eTY_Xc6M"
-OWNER_ID = 8986441675
-
 # ============ DATABASE MODELS ============
 class User(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -38,7 +38,6 @@ class User(db.Model):
     ip_address = db.Column(db.String(50), nullable=True)
     first_seen = db.Column(db.DateTime, default=datetime.utcnow)
     is_banned = db.Column(db.Boolean, default=False)
-    device_id = db.Column(db.String(200), nullable=True)
 
 class Setting(db.Model):
     id = db.Column(db.Integer, primary_key=True)
@@ -59,46 +58,55 @@ class BannedIP(db.Model):
     user_id = db.Column(db.String(100), nullable=True)
     banned_at = db.Column(db.DateTime, default=datetime.utcnow)
 
-# Create tables
-with app.app_context():
-    db.create_all()
-    
-    # Default settings
-    if not Setting.query.filter_by(key='bg_image').first():
-        db.session.add(Setting(key='bg_image', value=''))
-    if not Setting.query.filter_by(key='bg_type').first():
-        db.session.add(Setting(key='bg_type', value='image'))
-    if not Setting.query.filter_by(key='primary_color').first():
-        db.session.add(Setting(key='primary_color', value='#00ff00'))
-    db.session.commit()
+# Create tables - FIXED
+def init_db():
+    with app.app_context():
+        db.create_all()
+        
+        # Default settings
+        if not Setting.query.filter_by(key='bg_image').first():
+            db.session.add(Setting(key='bg_image', value=''))
+        if not Setting.query.filter_by(key='bg_type').first():
+            db.session.add(Setting(key='bg_type', value='image'))
+        if not Setting.query.filter_by(key='primary_color').first():
+            db.session.add(Setting(key='primary_color', value='#00ff00'))
+        db.session.commit()
+
+init_db()
 
 # ============ HELPERS ============
 def get_setting(key):
-    s = Setting.query.filter_by(key=key).first()
-    return s.value if s else None
+    try:
+        s = Setting.query.filter_by(key=key).first()
+        return s.value if s else None
+    except:
+        return None
 
 def set_setting(key, value):
-    s = Setting.query.filter_by(key=key).first()
-    if s:
-        s.value = value
-    else:
-        s = Setting(key=key, value=value)
-        db.session.add(s)
-    db.session.commit()
+    try:
+        s = Setting.query.filter_by(key=key).first()
+        if s:
+            s.value = value
+        else:
+            s = Setting(key=key, value=value)
+            db.session.add(s)
+        db.session.commit()
+    except:
+        pass
 
 def get_next_display_id():
-    last = User.query.order_by(User.display_id.desc()).first()
-    return last.display_id + 1 if last else 18277
-
-def get_device_id(ip, user_agent):
-    """Generate unique device ID from IP + User Agent"""
-    combined = f"{ip}_{user_agent}"
-    return hashlib.sha256(combined.encode()).hexdigest()[:32]
+    try:
+        last = User.query.order_by(User.display_id.desc()).first()
+        return last.display_id + 1 if last else 18277
+    except:
+        return 18277
 
 def is_ip_banned(ip):
-    """Check if IP is banned"""
-    banned = BannedIP.query.filter_by(ip_address=ip).first()
-    return banned is not None
+    try:
+        banned = BannedIP.query.filter_by(ip_address=ip).first()
+        return banned is not None
+    except:
+        return False
 
 def get_num_info(number):
     try:
@@ -117,7 +125,6 @@ def get_tg_info(user_id):
         return {"status": False, "error": "API Error"}
 
 def extract_all_numbers(data):
-    """Extract all phone numbers from nested data"""
     numbers = set()
     if isinstance(data, dict):
         for key, value in data.items():
@@ -131,7 +138,6 @@ def extract_all_numbers(data):
     return numbers
 
 def get_all_alternatives(number, depth=3):
-    """Recursive alternative number search"""
     all_nums = set()
     all_nums.add(number)
     result = get_num_info(number)
@@ -147,74 +153,65 @@ def get_all_alternatives(number, depth=3):
     
     return all_nums, result
 
-def register_user(user_id, username, ip, user_agent):
-    """Register new user with device tracking"""
-    # Check if IP is banned
-    if is_ip_banned(ip):
-        return None, False
-    
-    device_id = get_device_id(ip, user_agent)
-    
-    # Check if user exists by user_id or device_id
-    user = User.query.filter_by(user_id=str(user_id)).first()
-    
-    # If user banned by IP
-    if user and user.is_banned:
-        # Add IP to banned list
-        if not is_ip_banned(ip):
-            banned = BannedIP(ip_address=ip, user_id=str(user_id))
-            db.session.add(banned)
-            db.session.commit()
-        return None, False
-    
-    if not user:
-        display_id = get_next_display_id()
-        user = User(
-            display_id=display_id,
-            user_id=str(user_id),
-            username=username,
-            ip_address=ip,
-            device_id=device_id
-        )
-        db.session.add(user)
-        db.session.commit()
+def register_user(user_id, username, ip):
+    try:
+        if is_ip_banned(ip):
+            return None, False
         
-        # Send notification to Telegram
-        try:
-            import requests as req
-            msg = f"🔔 NEW USER\nID: {display_id}\nUser: {user_id}\nIP: {ip}\nTime: {datetime.now().strftime('%Y-%m-%d %H:%M')}"
-            req.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", json={'chat_id': OWNER_ID, 'text': msg})
-        except:
-            pass
-        return user, True
-    
-    # Check if user is banned
-    if user.is_banned:
-        # Add IP to banned list
-        if not is_ip_banned(ip):
-            banned = BannedIP(ip_address=ip, user_id=str(user_id))
-            db.session.add(banned)
+        user = User.query.filter_by(user_id=str(user_id)).first()
+        
+        if user and user.is_banned:
+            if not is_ip_banned(ip):
+                banned = BannedIP(ip_address=ip, user_id=str(user_id))
+                db.session.add(banned)
+                db.session.commit()
+            return None, False
+        
+        if not user:
+            display_id = get_next_display_id()
+            user = User(
+                display_id=display_id,
+                user_id=str(user_id),
+                username=username,
+                ip_address=ip
+            )
+            db.session.add(user)
             db.session.commit()
+            
+            # Send notification
+            try:
+                import requests as req
+                msg = f"🔔 NEW USER\nID: {display_id}\nUser: {user_id}\nIP: {ip}"
+                req.post(f"https://api.telegram.org/bot8592467504:AAEm-p2jCYnWUaq4Yy8MhhMSDI2eTY_Xc6M/sendMessage", json={'chat_id': 8986441675, 'text': msg})
+            except:
+                pass
+            return user, True
+        
+        if user.is_banned:
+            if not is_ip_banned(ip):
+                banned = BannedIP(ip_address=ip, user_id=str(user_id))
+                db.session.add(banned)
+                db.session.commit()
+            return None, False
+        
+        return user, False
+    except Exception as e:
+        print(f"Register error: {e}")
         return None, False
-    
-    return user, False
 
 def is_user_banned(user_id, ip):
-    """Check if user is banned by ID or IP"""
-    # Check IP ban
     if is_ip_banned(ip):
         return True
-    
-    # Check user ban
-    user = User.query.filter_by(user_id=str(user_id)).first()
-    if user and user.is_banned:
-        # Also ban IP
-        if not is_ip_banned(ip):
-            banned = BannedIP(ip_address=ip, user_id=str(user_id))
-            db.session.add(banned)
-            db.session.commit()
-        return True
-    
+    try:
+        user = User.query.filter_by(user_id=str(user_id)).first()
+        if user and user.is_banned:
+            if not is_ip_banned(ip):
+                banned = BannedIP(ip_address=ip, user_id=str(user_id))
+                db.session.add(banned)
+                db.session.commit()
+            return True
+    except:
+        pass
     return False
 
 def fancy(text):
@@ -589,7 +586,6 @@ def index():
     if 'access_granted' in session:
         return redirect('/dashboard')
     
-    # Check if IP is banned
     if is_ip_banned(request.remote_addr):
         bg = get_setting('bg_image') or ''
         bg_type = get_setting('bg_type') or 'image'
@@ -605,7 +601,6 @@ def index():
 def verify_key():
     ip = request.remote_addr
     
-    # Check IP ban first
     if is_ip_banned(ip):
         bg = get_setting('bg_image') or ''
         bg_type = get_setting('bg_type') or 'image'
@@ -616,14 +611,11 @@ def verify_key():
     if key == WEB_ACCESS_KEY:
         session['access_granted'] = True
         
-        # Generate user ID from IP + timestamp
         user_id = hashlib.sha256(f"{ip}_{datetime.now().timestamp()}".encode()).hexdigest()[:20]
         
-        # Register user
-        user, is_new = register_user(user_id, None, ip, request.headers.get('User-Agent', ''))
+        user, is_new = register_user(user_id, None, ip)
         
         if user is None:
-            # User is banned
             bg = get_setting('bg_image') or ''
             bg_type = get_setting('bg_type') or 'image'
             color = get_setting('primary_color') or '#00ff00'
@@ -646,12 +638,10 @@ def dashboard():
     user_id = session.get('user_id')
     user = User.query.filter_by(user_id=user_id).first()
     
-    # Check if user is banned
     if user and user.is_banned:
         session.clear()
         return redirect('/')
     
-    # Check IP ban
     if is_ip_banned(request.remote_addr):
         session.clear()
         return redirect('/')
@@ -695,7 +685,6 @@ def num_info():
         'protected': 'protected' in str(result).lower() if result else False
     }
     
-    # Save history
     if user:
         history = SearchHistory(user_id=user.id, search_type='num', query=number, result=json.dumps(result))
         db.session.add(history)
@@ -802,7 +791,6 @@ def admin_ban():
     user = User.query.filter_by(user_id=user_id).first()
     if user:
         user.is_banned = True
-        # Also ban IP
         if user.ip_address and not is_ip_banned(user.ip_address):
             banned = BannedIP(ip_address=user.ip_address, user_id=user_id)
             db.session.add(banned)
@@ -818,7 +806,6 @@ def admin_unban():
     user = User.query.filter_by(user_id=user_id).first()
     if user:
         user.is_banned = False
-        # Remove IP from banned list (optional)
         if user.ip_address:
             banned = BannedIP.query.filter_by(ip_address=user.ip_address).first()
             if banned:
